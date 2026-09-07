@@ -1,0 +1,193 @@
+name: ShadowXVX24
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */5 * * *"
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: shadowxv
+  cancel-in-progress: false
+
+jobs:
+  ShadowXV:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 295
+
+    env:
+      DATA_DIR: ${{ github.workspace }}/data
+      BACKUP_DIR: ${{ github.workspace }}/backup
+
+    steps:
+      - name: Prepare Ubuntu 22.04
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p "$DATA_DIR"
+          mkdir -p "$BACKUP_DIR"
+
+          chmod 700 "$DATA_DIR"
+          chmod 700 "$BACKUP_DIR"
+
+          echo "Ubuntu:"
+          cat /etc/os-release
+
+          echo "User:"
+          whoami
+
+          echo "ID:"
+          id
+
+      - name: Verify sudo
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          sudo -n true
+          sudo -v
+
+          echo "SUDO OK"
+          sudo whoami
+
+      - name: Restore newest backup
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+
+          echo "Searching for previous backup..."
+
+          LAST_RUN="$(
+            gh run list \
+              --workflow main.yml \
+              --status success \
+              --limit 20 \
+              --json databaseId,createdAt \
+              --jq '.[0].databaseId'
+          )"
+
+          if [ -z "${LAST_RUN:-}" ]; then
+            echo "No previous backup."
+            exit 0
+          fi
+
+          rm -rf restore
+          mkdir -p restore
+
+          if gh run download "$LAST_RUN" \
+              --name shadowxv-data \
+              --dir restore; then
+
+            if [ -f restore/data.tar.gz ]; then
+              rm -rf "$DATA_DIR"/*
+              tar -xzf restore/data.tar.gz -C "$DATA_DIR"
+
+              chmod -R u+rwX,go-rwx "$DATA_DIR"
+
+              echo "Backup restored successfully."
+            fi
+          else
+            echo "No downloadable backup found."
+          fi
+
+      - name: Refresh backup directory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p "$DATA_DIR"
+          mkdir -p "$BACKUP_DIR"
+
+          chmod 700 "$DATA_DIR"
+          chmod 700 "$BACKUP_DIR"
+
+          echo "Data:"
+          du -sh "$DATA_DIR" || true
+
+      - name: Setup and Start sshx in Background
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "Installing sshx..."
+          curl -sSf https://sshx.io/get | sh
+
+          echo "Starting sshx in the background..."
+          nohup sshx > sshx.log 2>&1 &
+
+          echo "Waiting for sshx URL to generate..."
+          for i in {1..15}; do
+            if grep -q "https://sshx.io/" sshx.log; then
+              break
+            fi
+            sleep 1
+          done
+
+          echo "========================================"
+          echo "SSHX CONNECTION URL (INPUT/OUTPUT):"
+          grep -o 'https://sshx.io/[a-zA-Z0-9#]*' sshx.log || cat sshx.log
+          echo "========================================"
+
+      - name: Run current 5 hour cycle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "ShadowXV cycle started."
+          echo "Ubuntu 22.04"
+          echo "Start: $(date -u)"
+
+          END=$((SECONDS + 285 * 60))
+
+          while [ "$SECONDS" -lt "$END" ]; do
+            echo "Running: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            sleep 60
+          done
+
+          echo "Cycle finished."
+
+      - name: Create fresh backup
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p "$BACKUP_DIR"
+
+          rm -f "$BACKUP_DIR/data.tar.gz"
+
+          if [ -d "$DATA_DIR" ]; then
+            tar \
+              -czf "$BACKUP_DIR/data.tar.gz" \
+              -C "$DATA_DIR" .
+
+            chmod 600 "$BACKUP_DIR/data.tar.gz"
+
+            echo "Fresh backup created:"
+            ls -lh "$BACKUP_DIR/data.tar.gz"
+          fi
+
+      - name: Upload refreshed backup
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadowxv-data
+          path: backup/data.tar.gz
+          retention-days: 90
+          overwrite: true
+          if-no-files-found: ignore
+
+      - name: Final status
+        if: always()
+        run: |
+          echo "================================"
+          echo "Cycle completed"
+          echo "Time: $(date -u)"
+          echo "Next scheduled cycle: ~5 hours"
+          echo "================================"
